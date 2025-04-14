@@ -1,0 +1,15 @@
+version: "3.8"
+services:
+    clickhouse:
+        image: clickhouse/clickhouse-server:latest
+        ports:
+            - "8123:8123"
+            - "9000:9000"
+        volumes:
+            - clickhouse_data:/var/lib/clickhouse
+        environment:
+            - CLICKHOUSE_USER=default
+            - CLICKHOUSE_PASSWORD=""
+            - CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT=1
+volumes:
+    clickhouse_data:
