@@ -21,6 +21,26 @@ app.use((req, res, next) => {
     next();
 });
 
+// Define standard column names for UK property price data
+const UK_PROPERTY_COLUMNS = [
+    "transaction_id",
+    "price",
+    "date_of_transfer",
+    "postcode",
+    "property_type",
+    "old_new",
+    "duration",
+    "paon",
+    "saon",
+    "street",
+    "locality",
+    "town_city",
+    "district",
+    "county",
+    "ppd_category_type",
+    "record_status",
+];
+
 // Test endpoint
 app.get("/", (req, res) => {
     res.json({ message: "ClickHouse-FlatFile Ingestion Tool Backend" });
@@ -147,39 +167,171 @@ app.post("/columns", upload.single("file"), async (req, res) => {
         }
     } else if (req.file) {
         console.log("Parsing uploaded file for columns:", req.file.path);
-        const columns = [];
-        fs.createReadStream(req.file.path)
-            .pipe(parse({ delimiter: ",", columns: true }))
-            .on("data", (row) => {
-                if (!columns.length) {
-                    columns.push(...Object.keys(row));
-                }
-            })
-            .on("end", () => {
-                console.log("Successfully parsed columns:", columns);
-                // Keep the file for later use in ingestion
+
+        // Check file extension
+        const fileExt = path.extname(req.file.originalname).toLowerCase();
+
+        if (fileExt === ".csv" || fileExt === ".txt") {
+            // For UK property price data files, use predefined column names
+            if (
+                req.file.originalname.toLowerCase().includes("pp-") ||
+                req.file.originalname.toLowerCase().includes("price-paid")
+            ) {
+                // For UK property price data, use standard column names
+                console.log(
+                    "Detected UK property price data file, using standard column names"
+                );
                 res.json({
                     success: true,
-                    columns: columns.map((name) => ({ name, type: "String" })),
+                    columns: UK_PROPERTY_COLUMNS.map((name) => ({
+                        name,
+                        type: "String",
+                    })),
                     filePath: req.file.path,
                 });
-            })
-            .on("error", (error) => {
-                console.error("Error parsing uploaded file:", error);
-                try {
-                    fs.unlinkSync(req.file.path);
-                } catch (unlinkError) {
-                    console.error("Error deleting file:", unlinkError);
-                }
-                res.status(400).json({
-                    success: false,
-                    error: error.message,
-                    stack: error.stack,
-                });
+            } else {
+                // For other CSV files, attempt to read the header row
+                let firstLine = "";
+                let hasReadFirstLine = false;
+
+                fs.createReadStream(req.file.path)
+                    .on("data", (chunk) => {
+                        if (!hasReadFirstLine) {
+                            // Find the first newline to get just the header
+                            const newlineIndex = chunk.indexOf("\n");
+                            if (newlineIndex !== -1) {
+                                firstLine += chunk
+                                    .slice(0, newlineIndex)
+                                    .toString();
+                                hasReadFirstLine = true;
+                            } else {
+                                firstLine += chunk.toString();
+                            }
+                        }
+                    })
+                    .on("end", () => {
+                        if (firstLine) {
+                            // Split the header line by comma to get column names
+                            const columnNames = firstLine
+                                .split(",")
+                                .map((name) => name.trim());
+                            console.log(
+                                "Successfully parsed columns from header:",
+                                columnNames
+                            );
+                            res.json({
+                                success: true,
+                                columns: columnNames.map((name) => ({
+                                    name,
+                                    type: "String",
+                                })),
+                                filePath: req.file.path,
+                            });
+                        } else {
+                            // Fallback to simple column numbering if header can't be parsed
+                            console.log(
+                                "Could not parse header, using generic column names"
+                            );
+                            const parser = parse({ delimiter: "," });
+                            let columnCount = 0;
+
+                            parser.on("readable", function () {
+                                let record;
+                                while ((record = parser.read())) {
+                                    columnCount = record.length;
+                                    break; // Only need the first row to count columns
+                                }
+                            });
+
+                            parser.on("end", function () {
+                                const columns = Array.from(
+                                    { length: columnCount },
+                                    (_, i) => ({
+                                        name: `column_${i + 1}`,
+                                        type: "String",
+                                    })
+                                );
+
+                                res.json({
+                                    success: true,
+                                    columns,
+                                    filePath: req.file.path,
+                                });
+                            });
+
+                            fs.createReadStream(req.file.path).pipe(parser);
+                        }
+                    })
+                    .on("error", (error) => {
+                        console.error("Error reading file header:", error);
+                        res.status(400).json({
+                            success: false,
+                            error: error.message,
+                        });
+                    });
+            }
+        } else {
+            res.status(400).json({
+                success: false,
+                error: "Unsupported file format. Please upload a CSV or TXT file.",
             });
+        }
     } else {
         console.error("No file uploaded for parsing columns");
         res.status(400).json({ success: false, error: "No file uploaded" });
+    }
+});
+
+// Download table data as CSV
+app.post("/download", async (req, res) => {
+    console.log("Download endpoint called with body:", req.body);
+    const {
+        tableName,
+        host = "localhost",
+        port = "8123",
+        database = "default",
+        user = "default",
+        jwtToken = "",
+    } = req.body;
+
+    if (!tableName) {
+        return res.status(400).json({
+            success: false,
+            error: "Missing table name for download",
+        });
+    }
+
+    try {
+        // Create ClickHouse client
+        const client = createClient({
+            host: `http://${host}:${port}`,
+            username: user,
+            password: jwtToken,
+            database,
+        });
+
+        // Query data from the table
+        const result = await client.query({
+            query: `SELECT * FROM ${tableName}`,
+            format: "CSVWithNames",
+        });
+
+        const csvData = await result.text();
+        await client.close();
+
+        // Send CSV data
+        res.setHeader("Content-Type", "text/csv");
+        res.setHeader(
+            "Content-Disposition",
+            `attachment; filename="${tableName}.csv"`
+        );
+        res.send(csvData);
+    } catch (error) {
+        console.error("Error downloading data:", error);
+        res.status(400).json({
+            success: false,
+            error: error.message,
+        });
     }
 });
 
@@ -233,9 +385,12 @@ app.post("/ingest", upload.single("file"), async (req, res) => {
         const tableExists = await checkResult.json();
 
         if (!tableExists[0] || tableExists[0].result === 0) {
+            // Parse column names and escape them for SQL
+            const selectedColumns = JSON.parse(columns);
+
             // Create columns definition for CREATE TABLE
-            const columnsDefinition = JSON.parse(columns)
-                .map((col) => `${col} String`)
+            const columnsDefinition = selectedColumns
+                .map((col) => `\`${col}\` String`)
                 .join(", ");
 
             const createTableQuery = `
@@ -255,7 +410,10 @@ app.post("/ingest", upload.single("file"), async (req, res) => {
         // Handle different data sources
         if (source === "ClickHouse") {
             // Get selected columns from source table
-            const columnsCSV = JSON.parse(columns).join(", ");
+            const selectedColumns = JSON.parse(columns);
+            const columnsCSV = selectedColumns
+                .map((col) => `\`${col}\``)
+                .join(", ");
 
             // Insert data from source table to target table
             const insertQuery = `
@@ -283,73 +441,78 @@ app.post("/ingest", upload.single("file"), async (req, res) => {
 
             // Read CSV data
             const rows = [];
+            const selectedColumns = JSON.parse(columns);
+
+            // Check if it's a UK property price file
+            const isUKPropertyFile = selectedColumns.some((col) =>
+                UK_PROPERTY_COLUMNS.includes(col)
+            );
+
+            const parserOptions = {
+                delimiter: ",",
+                columns: isUKPropertyFile ? UK_PROPERTY_COLUMNS : true,
+                skip_empty_lines: true,
+                trim: true,
+            };
+
             fs.createReadStream(csvFile)
-                .pipe(parse({ delimiter: ",", columns: true }))
+                .pipe(parse(parserOptions))
                 .on("data", (row) => {
                     // Only keep the selected columns
                     const filteredRow = {};
-                    JSON.parse(columns).forEach((col) => {
+                    selectedColumns.forEach((col) => {
                         filteredRow[col] = row[col];
                     });
                     rows.push(filteredRow);
                 })
                 .on("end", async () => {
-                    // Insert data in batches
-                    const batchSize = 1000;
-                    const selectedColumns = JSON.parse(columns);
+                    try {
+                        // Insert data in batches
+                        const batchSize = 100; // Reduced batch size to avoid query length issues
 
-                    for (let i = 0; i < rows.length; i += batchSize) {
-                        const batch = rows.slice(i, i + batchSize);
-
-                        // Format the data for insertion
-                        const values = batch
-                            .map(
-                                (row) =>
-                                    `(${selectedColumns
-                                        .map(
-                                            (col) =>
-                                                `'${
-                                                    row[col]?.replace(
-                                                        /'/g,
-                                                        "''"
-                                                    ) || ""
-                                                }'`
-                                        )
-                                        .join(", ")})`
-                            )
+                        // Use prepared inserts instead of VALUES clause
+                        const escapedColumns = selectedColumns
+                            .map((col) => `\`${col}\``)
                             .join(", ");
 
-                        if (values.length > 0) {
-                            const insertQuery = `
-                                INSERT INTO ${targetTable} (${selectedColumns.join(
-                                ", "
-                            )})
-                                VALUES ${values}
-                            `;
+                        for (let i = 0; i < rows.length; i += batchSize) {
+                            const batch = rows.slice(i, i + batchSize);
 
-                            await client.query({
-                                query: insertQuery,
-                            });
+                            if (batch.length > 0) {
+                                // Use the client.insert method which is more reliable than raw SQL
+                                await client.insert({
+                                    table: targetTable,
+                                    values: batch,
+                                    format: "JSONEachRow",
+                                });
+                            }
                         }
+
+                        console.log(
+                            `Inserted ${rows.length} rows from CSV into ${targetTable}`
+                        );
+
+                        // Clean up
+                        try {
+                            fs.unlinkSync(csvFile);
+                        } catch (e) {
+                            console.error("Error deleting file:", e);
+                        }
+
+                        await client.close();
+
+                        res.json({
+                            success: true,
+                            message: `Successfully ingested ${rows.length} rows into ${targetTable}`,
+                        });
+                    } catch (error) {
+                        console.error("Error inserting data:", error);
+                        await client.close();
+                        res.status(400).json({
+                            success: false,
+                            error: `Error inserting data: ${error.message}`,
+                        });
                     }
-
-                    console.log(
-                        `Inserted ${rows.length} rows from CSV into ${targetTable}`
-                    );
-
-                    // Clean up
-                    try {
-                        fs.unlinkSync(csvFile);
-                    } catch (e) {
-                        console.error("Error deleting file:", e);
-                    }
-
-                    await client.close();
-
-                    res.json({
-                        success: true,
-                        message: `Successfully ingested ${rows.length} rows into ${targetTable}`,
-                    });
                 })
                 .on("error", (error) => {
                     console.error("Error parsing CSV for ingestion:", error);
