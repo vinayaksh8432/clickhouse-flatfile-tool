@@ -2,6 +2,10 @@
 
 A web-based application for transferring data between ClickHouse databases and flat files (CSV/TXT). This tool simplifies the process of importing data from CSV/TXT files into ClickHouse and exporting data from ClickHouse tables to CSV files.
 
+![Screenshot 2025-04-16 120211](https://github.com/user-attachments/assets/a2fe64e7-ce1e-45db-9887-f97ada0a3c29)
+
+![Screenshot 2025-04-16 120239](https://github.com/user-attachments/assets/43288274-08ce-47f6-8802-6237ecf0a5eb)
+
 ## Features
 
 -   **Dual Data Source Support:**
