@@ -18,8 +18,13 @@ function App() {
     const [selectedColumns, setSelectedColumns] = useState([]);
     const [targetTable, setTargetTable] = useState("");
     const [filePath, setFilePath] = useState("");
-    const [status, setStatus] = useState("Not Connected");
+    const [status, setStatus] = useState("");
     const [showDownloadButton, setShowDownloadButton] = useState(false);
+    const [previewData, setPreviewData] = useState([]);
+    const [previewColumns, setPreviewColumns] = useState([]);
+    const [showPreview, setShowPreview] = useState(false);
+    const [isConnected, setIsConnected] = useState(false);
+    const [isLoadingColumns, setIsLoadingColumns] = useState(false);
 
     // Clear selected columns when source or table changes
     useEffect(() => {
@@ -38,11 +43,8 @@ function App() {
 
     const handleConnect = async () => {
         setStatus("Connecting...");
+        setIsLoadingColumns(true);
         try {
-            console.log("Sending connection request with:", {
-                source,
-                ...connection,
-            });
             const response = await axios.post("http://localhost:8000/connect", {
                 source,
                 ...connection,
@@ -50,25 +52,25 @@ function App() {
             if (response.data.success) {
                 setTables(response.data.tables || []);
                 setStatus("Connected");
+                setIsConnected(true);
             } else {
                 setStatus(`Error: ${response.data.error}`);
             }
         } catch (error) {
             console.error("Connection error:", error);
-            console.error(
-                "Error details:",
-                error.response?.data || "No response data"
-            );
             setStatus(
                 `Connection failed: ${
                     error.response?.data?.error || error.message
                 }`
             );
+        } finally {
+            setIsLoadingColumns(false);
         }
     };
 
     const handleLoadColumns = async () => {
         setStatus("Fetching columns...");
+        setIsLoadingColumns(true);
         const formData = new FormData();
         formData.append("source", source);
         formData.append("table", selectedTable);
@@ -82,17 +84,11 @@ function App() {
             formData.append("file", file);
         }
         try {
-            console.log("Sending column request with:", {
-                source,
-                table: selectedTable,
-                ...connection,
-            });
             const response = await axios.post(
                 "http://localhost:8000/columns",
                 formData
             );
             if (response.data.success) {
-                console.log("Received columns:", response.data.columns);
                 setColumns(response.data.columns);
                 if (response.data.filePath) {
                     setFilePath(response.data.filePath);
@@ -103,15 +99,13 @@ function App() {
             }
         } catch (error) {
             console.error("Error loading columns:", error);
-            console.error(
-                "Error details:",
-                error.response?.data || "No response data"
-            );
             setStatus(
                 `Failed to load columns: ${
                     error.response?.data?.error || error.message
                 }`
             );
+        } finally {
+            setIsLoadingColumns(false);
         }
     };
 
@@ -121,6 +115,14 @@ function App() {
                 ? prev.filter((c) => c !== column.name)
                 : [...prev, column.name]
         );
+    };
+
+    const handleSelectAll = () => {
+        if (selectedColumns.length === columns.length) {
+            setSelectedColumns([]);
+        } else {
+            setSelectedColumns(columns.map((column) => column.name));
+        }
     };
 
     const handleIngestData = async () => {
@@ -135,8 +137,6 @@ function App() {
         }
 
         setStatus("Ingesting data...");
-        setShowDownloadButton(false);
-
         try {
             const formData = new FormData();
             formData.append("source", source);
@@ -182,7 +182,7 @@ function App() {
 
     const handleDownloadCSV = async () => {
         try {
-            // Using Axios to download the file with proper headers
+            setStatus("Downloading data...");
             const response = await axios({
                 method: "post",
                 url: "http://localhost:8000/download",
@@ -194,59 +194,86 @@ function App() {
                     user: connection.user,
                     jwtToken: connection.jwtToken,
                 },
-                responseType: "blob", // Important for file downloads
+                responseType: "blob",
             });
 
-            // Create a URL for the blob
             const url = window.URL.createObjectURL(new Blob([response.data]));
-
-            // Create a temporary link to trigger download
             const link = document.createElement("a");
             link.href = url;
             link.setAttribute("download", `${targetTable}.csv`);
             document.body.appendChild(link);
             link.click();
 
-            // Clean up
             window.URL.revokeObjectURL(url);
             document.body.removeChild(link);
+            setStatus("Download complete");
         } catch (error) {
             console.error("Error downloading data:", error);
             setStatus(`Download failed: ${error.message}`);
         }
     };
 
-    return (
-        <div className="min-h-screen bg-gray-50 text-gray-800 relative px-36 py-4">
-            <h1 className="text-3xl font-semibold mb-8 text-center text-blue-600">
-                ClickHouse-FlatFile Ingestion Tool
-            </h1>
+    const handlePreviewData = async () => {
+        try {
+            setStatus("Fetching preview data...");
+            const response = await axios({
+                method: "post",
+                url: "http://localhost:8000/preview",
+                data: {
+                    tableName: targetTable,
+                    host: connection.host,
+                    port: connection.port,
+                    database: connection.database,
+                    user: connection.user,
+                    jwtToken: connection.jwtToken,
+                    limit: 10,
+                },
+            });
 
-            <div className="grid grid-cols-2 gap-4">
-                {/* Source Selection */}
-                <div className="flex flex-col gap-4">
-                    <div className="flex items-center gap-4">
-                        <label className="text-sm font-medium w-28">
-                            Data Source:
-                        </label>
+            if (response.data.success) {
+                setPreviewColumns(response.data.columns);
+                setPreviewData(response.data.data);
+                setShowPreview(true);
+                setStatus("Data preview loaded");
+            } else {
+                setStatus(`Preview error: ${response.data.error}`);
+            }
+        } catch (error) {
+            console.error("Error previewing data:", error);
+            setStatus(
+                `Preview failed: ${
+                    error.response?.data?.error || error.message
+                }`
+            );
+        }
+    };
+
+    return (
+        <div className="app-container">
+            <header>
+                <h1>ClickHouse-FlatFile Ingestion Tool</h1>
+            </header>
+
+            <main>
+                <section className="data-source-section">
+                    <h2>Data Source</h2>
+
+                    <div className="source-selector">
+                        <label>Source Type:</label>
                         <select
                             value={source}
                             onChange={(e) => setSource(e.target.value)}
-                            className="px-3 py-2 border border-gray-200 rounded w-full focus:outline-none focus:border-blue-500"
                         >
                             <option value="ClickHouse">ClickHouse</option>
                             <option value="Flat File">Flat File</option>
                         </select>
                     </div>
 
-                    {/* Connection Details */}
-                    <div>
-                        {source === "ClickHouse" ? (
-                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mb-4 pl-28">
-                                <div className="flex flex-col">
-                                    <label className="text-sm text-gray-600 mb-1">
-                                        Host:
-                                    </label>
+                    {source === "ClickHouse" ? (
+                        <div className="connection-form">
+                            <div className="form-row">
+                                <div className="form-field">
+                                    <label>Host:</label>
                                     <input
                                         value={connection.host}
                                         onChange={(e) =>
@@ -255,13 +282,10 @@ function App() {
                                                 host: e.target.value,
                                             })
                                         }
-                                        className="px-3 py-2 border border-gray-200 rounded focus:outline-none focus:border-blue-500"
                                     />
                                 </div>
-                                <div className="flex flex-col">
-                                    <label className="text-sm text-gray-600 mb-1">
-                                        Port:
-                                    </label>
+                                <div className="form-field">
+                                    <label>Port:</label>
                                     <input
                                         value={connection.port}
                                         onChange={(e) =>
@@ -270,13 +294,12 @@ function App() {
                                                 port: e.target.value,
                                             })
                                         }
-                                        className="px-3 py-2 border border-gray-200 rounded focus:outline-none focus:border-blue-500"
                                     />
                                 </div>
-                                <div className="flex flex-col">
-                                    <label className="text-sm text-gray-600 mb-1">
-                                        Database:
-                                    </label>
+                            </div>
+                            <div className="form-row">
+                                <div className="form-field">
+                                    <label>Database:</label>
                                     <input
                                         value={connection.database}
                                         onChange={(e) =>
@@ -285,13 +308,10 @@ function App() {
                                                 database: e.target.value,
                                             })
                                         }
-                                        className="px-3 py-2 border border-gray-200 rounded focus:outline-none focus:border-blue-500"
                                     />
                                 </div>
-                                <div className="flex flex-col">
-                                    <label className="text-sm text-gray-600 mb-1">
-                                        User:
-                                    </label>
+                                <div className="form-field">
+                                    <label>User:</label>
                                     <input
                                         value={connection.user}
                                         onChange={(e) =>
@@ -300,13 +320,12 @@ function App() {
                                                 user: e.target.value,
                                             })
                                         }
-                                        className="px-3 py-2 border border-gray-200 rounded focus:outline-none focus:border-blue-500"
                                     />
                                 </div>
-                                <div className="flex flex-col">
-                                    <label className="text-sm text-gray-600 mb-1">
-                                        Password:
-                                    </label>
+                            </div>
+                            <div className="form-row">
+                                <div className="form-field">
+                                    <label>Password:</label>
                                     <input
                                         type="password"
                                         value={connection.jwtToken}
@@ -316,274 +335,223 @@ function App() {
                                                 jwtToken: e.target.value,
                                             })
                                         }
-                                        className="px-3 py-2 border border-gray-200 rounded focus:outline-none focus:border-blue-500"
                                     />
                                 </div>
                             </div>
-                        ) : (
-                            <div className="flex justify-center w-full mb-4">
-                                <div className="w-3/4">
-                                    <label
-                                        htmlFor="file-upload"
-                                        className="flex flex-col items-center justify-center w-full h-32 px-4 transition bg-white border-2 border-gray-300 border-dashed rounded-md appearance-none cursor-pointer hover:border-blue-500 focus:outline-none"
-                                    >
-                                        <span className="flex items-center space-x-2">
-                                            <svg
-                                                xmlns="http://www.w3.org/2000/svg"
-                                                className="w-6 h-6 text-gray-600"
-                                                fill="none"
-                                                viewBox="0 0 24 24"
-                                                stroke="currentColor"
-                                                strokeWidth="2"
-                                            >
-                                                <path
-                                                    strokeLinecap="round"
-                                                    strokeLinejoin="round"
-                                                    d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
-                                                />
-                                            </svg>
-                                            <span className="font-medium text-gray-600">
-                                                {file
-                                                    ? file.name
-                                                    : "Drop files here or click to upload"}
-                                            </span>
-                                        </span>
-                                        <span className="text-xs text-gray-500 mt-2">
-                                            Supported formats: CSV, TXT
-                                        </span>
-                                        <input
-                                            id="file-upload"
-                                            type="file"
-                                            accept=".csv,.txt"
-                                            onChange={(e) =>
-                                                setFile(e.target.files[0])
-                                            }
-                                            className="hidden"
-                                        />
-                                    </label>
-                                </div>
-                            </div>
-                        )}
-                    </div>
-
-                    <div className="mx-auto flex justify-center">
-                        {source === "ClickHouse" ? (
                             <button
+                                className="action-button"
                                 onClick={handleConnect}
-                                className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors"
                             >
                                 Connect
                             </button>
-                        ) : (
+                        </div>
+                    ) : (
+                        <div className="file-upload">
+                            <label className="file-upload-label">
+                                {file ? file.name : "Select a CSV or TXT file"}
+                                <input
+                                    type="file"
+                                    accept=".csv,.txt"
+                                    onChange={(e) => setFile(e.target.files[0])}
+                                />
+                            </label>
                             <button
+                                className="action-button"
                                 onClick={handleLoadColumns}
                                 disabled={!file}
-                                className={`px-4 py-2 rounded text-white transition-colors ${
-                                    !file
-                                        ? "bg-gray-300 cursor-not-allowed"
-                                        : "bg-blue-500 hover:bg-blue-600"
-                                }`}
                             >
-                                Choose File
+                                Upload File
                             </button>
-                        )}
-                    </div>
-                    {/* Table Selection */}
-                    <div>
-                        {source === "ClickHouse" &&
-                            (status === "Connected" ||
-                                status === "Columns loaded" ||
-                                status.includes("Success")) && (
-                                <div className="flex gap-2">
-                                    <div className="flex items-center gap-4 w-full">
-                                        <label className="text-sm font-medium text-nowrap">
-                                            Select Table:
-                                        </label>
-                                        <select
-                                            value={selectedTable}
-                                            onChange={(e) =>
-                                                setSelectedTable(e.target.value)
-                                            }
-                                            className="px-3 py-2 border border-gray-200 rounded w-full focus:outline-none focus:border-blue-500"
-                                        >
-                                            <option value="">
-                                                Choose a table
-                                            </option>
-                                            {tables.map((table) => (
-                                                <option
-                                                    key={table}
-                                                    value={table}
-                                                >
-                                                    {table}
-                                                </option>
-                                            ))}
-                                        </select>
-                                    </div>
-                                    <button
-                                        onClick={handleLoadColumns}
-                                        className="px-4 py-2 bg-blue-500 text-white rounded hover:bg-blue-600 transition-colors text-nowrap"
-                                    >
-                                        Load Columns
-                                    </button>
-                                </div>
-                            )}
-                    </div>
+                        </div>
+                    )}
 
-                    <div>
-                        {source === "ClickHouse" &&
-                            !(
-                                status === "Connected" ||
-                                status === "Columns loaded" ||
-                                status.includes("Success")
-                            ) && (
-                                <div className="opacity-50">
-                                    <div className="flex items-center gap-4 mb-2">
-                                        <label className="text-sm font-medium w-28">
-                                            Select Table:
-                                        </label>
-                                        <select
-                                            disabled
-                                            className="px-3 py-2 border border-gray-200 rounded w-full focus:outline-none focus:border-blue-500 cursor-not-allowed"
-                                        >
-                                            <option value="">
-                                                Connect first to see tables
-                                            </option>
-                                        </select>
-                                    </div>
-                                    <div className="pl-28">
-                                        <button
-                                            disabled
-                                            className="px-4 py-2 bg-gray-300 text-gray-500 rounded cursor-not-allowed"
-                                        >
-                                            Load Columns
-                                        </button>
-                                    </div>
-                                </div>
-                            )}
-                    </div>
-                </div>
-
-                <div className="">
-                    {/* Column Selection */}
-                    {columns.length > 0 && (
-                        <div className="mb-6">
-                            <h3 className="text-lg font-medium mb-3">
-                                Select Columns:
-                            </h3>
-                            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-2 items-center mb-6">
-                                {columns.map((column) => (
-                                    <div
-                                        key={column.name}
-                                        className="flex items-center"
+                    {/* Always show table selection for ClickHouse if connected */}
+                    {source === "ClickHouse" && isConnected && (
+                        <div className="table-selector">
+                            <div className="form-row">
+                                <div className="form-field">
+                                    <label>Table:</label>
+                                    <select
+                                        value={selectedTable}
+                                        onChange={(e) =>
+                                            setSelectedTable(e.target.value)
+                                        }
                                     >
+                                        <option value="">Choose a table</option>
+                                        {tables.map((table) => (
+                                            <option key={table} value={table}>
+                                                {table}
+                                            </option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <button
+                                    className="action-button"
+                                    onClick={handleLoadColumns}
+                                    disabled={
+                                        isLoadingColumns || !selectedTable
+                                    }
+                                >
+                                    {isLoadingColumns
+                                        ? "Loading..."
+                                        : "Load Columns"}
+                                </button>
+                            </div>
+                        </div>
+                    )}
+                </section>
+
+                {columns.length > 0 && (
+                    <section className="column-section">
+                        <h2>Columns</h2>
+                        <div className="column-header">
+                            <button
+                                className="select-all-button"
+                                onClick={handleSelectAll}
+                            >
+                                {selectedColumns.length === columns.length
+                                    ? "Deselect All"
+                                    : "Select All"}
+                            </button>
+                            <div className="selected-count">
+                                {selectedColumns.length} of {columns.length}{" "}
+                                selected
+                            </div>
+                        </div>
+
+                        <div className="column-list">
+                            {columns.map((column) => (
+                                <div key={column.name} className="column-item">
+                                    <label className="column-label">
                                         <input
                                             type="checkbox"
-                                            id={column.name}
                                             checked={selectedColumns.includes(
                                                 column.name
                                             )}
                                             onChange={() =>
                                                 toggleColumn(column)
                                             }
-                                            className="mr-2"
                                         />
-                                        <label
-                                            htmlFor={column.name}
-                                            className="text-sm"
-                                        >
-                                            {column.name}{" "}
-                                            <span className="text-xs text-gray-500">
-                                                ({column.type})
-                                            </span>
-                                        </label>
-                                    </div>
-                                ))}
-                            </div>
+                                        <span className="column-name">
+                                            {column.name}
+                                        </span>
+                                        <span className="column-type">
+                                            {column.type}
+                                        </span>
+                                    </label>
+                                </div>
+                            ))}
+                        </div>
 
-                            {/* Data Ingestion */}
-                            {selectedColumns.length > 0 && (
-                                <div className="p-4 bg-gray-100 rounded">
-                                    <div className="flex justify-between items-center mb-3">
-                                        <h3 className="text-lg font-medium">
-                                            Target Table
-                                        </h3>
-                                        {showDownloadButton && (
-                                            <button
-                                                onClick={handleDownloadCSV}
-                                                className="text-blue-500 hover:text-blue-700 focus:outline-none"
-                                                title="Download CSV"
-                                            >
-                                                <svg
-                                                    xmlns="http://www.w3.org/2000/svg"
-                                                    className="h-6 w-6"
-                                                    fill="none"
-                                                    viewBox="0 0 24 24"
-                                                    stroke="currentColor"
-                                                >
-                                                    <path
-                                                        strokeLinecap="round"
-                                                        strokeLinejoin="round"
-                                                        strokeWidth={2}
-                                                        d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"
-                                                    />
-                                                </svg>
-                                            </button>
-                                        )}
-                                    </div>
-                                    <div className="flex gap-4 items-center mb-4">
-                                        <label className="text-sm font-medium w-28">
-                                            Table Name:
-                                        </label>
-                                        <input
-                                            value={targetTable}
-                                            onChange={(e) =>
-                                                setTargetTable(e.target.value)
-                                            }
-                                            placeholder="Enter target table name"
-                                            className="px-3 py-2 border border-gray-200 rounded w-full focus:outline-none focus:border-blue-500"
-                                        />
-                                    </div>
-                                    <div className="flex justify-between items-center">
-                                        <div className="text-sm">
-                                            <span className="text-blue-600 font-medium">
-                                                {selectedColumns.length}
-                                            </span>{" "}
-                                            columns selected
-                                        </div>
+                        <div className="target-table-section">
+                            <h3>Target Configuration</h3>
+                            <div className="form-row">
+                                <div className="form-field">
+                                    <label>Target Table Name:</label>
+                                    <input
+                                        value={targetTable}
+                                        onChange={(e) =>
+                                            setTargetTable(e.target.value)
+                                        }
+                                        placeholder="Enter target table name"
+                                    />
+                                </div>
+                            </div>
+                            <div className="action-buttons">
+                                <button
+                                    className="primary-button"
+                                    onClick={handleIngestData}
+                                    disabled={
+                                        !targetTable ||
+                                        selectedColumns.length === 0
+                                    }
+                                >
+                                    Ingest Data
+                                </button>
+
+                                {showDownloadButton && (
+                                    <>
                                         <button
-                                            onClick={handleIngestData}
-                                            disabled={
-                                                !targetTable ||
-                                                selectedColumns.length === 0
-                                            }
-                                            className={`px-4 py-2 rounded transition-colors ${
-                                                !targetTable ||
-                                                selectedColumns.length === 0
-                                                    ? "bg-gray-300 text-gray-500 cursor-not-allowed"
-                                                    : "bg-green-500 text-white hover:bg-green-600"
-                                            }`}
+                                            className="secondary-button"
+                                            onClick={handlePreviewData}
                                         >
-                                            Ingest Data
+                                            Preview Data
                                         </button>
-                                    </div>
+                                        <button
+                                            className="secondary-button"
+                                            onClick={handleDownloadCSV}
+                                        >
+                                            Download CSV
+                                        </button>
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    </section>
+                )}
+
+                {status && (
+                    <div className="status-message">
+                        <span>{status}</span>
+                    </div>
+                )}
+            </main>
+
+            {showPreview && (
+                <div className="modal-overlay">
+                    <div className="preview-modal">
+                        <div className="modal-header">
+                            <h3>Data Preview: {targetTable}</h3>
+                            <button
+                                className="close-button"
+                                onClick={() => setShowPreview(false)}
+                            >
+                                ×
+                            </button>
+                        </div>
+                        <div className="modal-content">
+                            {previewData.length > 0 ? (
+                                <table className="preview-table">
+                                    <thead>
+                                        <tr>
+                                            {previewColumns.map((column) => (
+                                                <th key={column}>{column}</th>
+                                            ))}
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {previewData.map((row, rowIndex) => (
+                                            <tr key={rowIndex}>
+                                                {previewColumns.map(
+                                                    (column) => (
+                                                        <td
+                                                            key={`${rowIndex}-${column}`}
+                                                        >
+                                                            {row[column]}
+                                                        </td>
+                                                    )
+                                                )}
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            ) : (
+                                <div className="no-data-message">
+                                    No data available for preview
                                 </div>
                             )}
                         </div>
-                    )}
-                </div>
-            </div>
-
-            {/* Status Messages */}
-            <div className="absolute right-4 bottom-8 rounded-xl border">
-                {status && (
-                    <div className="px-4 py-3 rounded text-sm">
-                        <p className="font-medium">
-                            Status:{" "}
-                            <span className="font-normal">{status}</span>
-                        </p>
+                        <div className="modal-footer">
+                            <button
+                                className="secondary-button"
+                                onClick={() => setShowPreview(false)}
+                            >
+                                Close
+                            </button>
+                        </div>
                     </div>
-                )}
-            </div>
+                </div>
+            )}
         </div>
     );
 }

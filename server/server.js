@@ -335,6 +335,67 @@ app.post("/download", async (req, res) => {
     }
 });
 
+// Preview table data (limited rows)
+app.post("/preview", async (req, res) => {
+    console.log("Preview endpoint called with body:", req.body);
+    const {
+        tableName,
+        host = "localhost",
+        port = "8123",
+        database = "default",
+        user = "default",
+        jwtToken = "",
+        limit = 10,
+    } = req.body;
+
+    if (!tableName) {
+        return res.status(400).json({
+            success: false,
+            error: "Missing table name for preview",
+        });
+    }
+
+    try {
+        // Create ClickHouse client
+        const client = createClient({
+            host: `http://${host}:${port}`,
+            username: user,
+            password: jwtToken,
+            database,
+        });
+
+        // First get the column names
+        const columnsResult = await client.query({
+            query: `DESCRIBE TABLE ${tableName}`,
+            format: "JSONEachRow",
+        });
+
+        const columnsData = await columnsResult.json();
+        const columns = columnsData.map((col) => col.name);
+
+        // Query limited data from the table
+        const dataResult = await client.query({
+            query: `SELECT * FROM ${tableName} LIMIT ${limit}`,
+            format: "JSONEachRow",
+        });
+
+        const data = await dataResult.json();
+        await client.close();
+
+        res.json({
+            success: true,
+            columns,
+            data,
+        });
+    } catch (error) {
+        console.error("Error previewing data:", error);
+        res.status(400).json({
+            success: false,
+            error: error.message,
+        });
+    }
+});
+
 // Ingest data endpoint
 app.post("/ingest", upload.single("file"), async (req, res) => {
     console.log("Ingest endpoint called with body:", req.body);
