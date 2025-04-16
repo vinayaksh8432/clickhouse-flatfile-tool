@@ -177,11 +177,3 @@ Both the client and server components have Dockerfiles for containerization. The
 
 -   **Database:**
     -   ClickHouse
-
-## License
-
-This project was created as a college project for Semester 6.
-
----
-
-Created by [Your Name]
